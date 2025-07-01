@@ -2,3 +2,4 @@
 /video
 /output
 /src/node_modules
+/.env
