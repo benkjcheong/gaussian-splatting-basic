@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Three.js Gaussian PLY Viewer Debug</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    canvas { display: block; }
+  </style>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.1/build/three.module.js",
+        "three/examples/jsm/loaders/PLYLoader.js": "https://unpkg.com/three@0.160.1/examples/jsm/loaders/PLYLoader.js",
+        "three/examples/jsm/controls/FlyControls.js": "https://unpkg.com/three@0.160.1/examples/jsm/controls/FlyControls.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <script type="module">
+    import * as THREE from 'three';
+    import { PLYLoader } from './PLYLoader.js';
+    import { FlyControls } from 'three/examples/jsm/controls/FlyControls.js';
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x111111);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 1000);
+    camera.position.set(0, 0, 2);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.appendChild(renderer.domElement);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+    const light = new THREE.DirectionalLight(0xffffff, 0.8);
+    light.position.set(5, 5, 5);
+    scene.add(light);
+
+    const controls = new FlyControls(camera, renderer.domElement);
+    controls.movementSpeed = 2;
+    controls.rollSpeed = 0.5;
+    controls.dragToLook = true;
+    controls.autoForward = false;
+
+    function evalSHBasis(dir) {
+      const x = dir.x, y = dir.y, z = dir.z;
+      return [
+        0.282095,
+        0.488603 * y,
+        0.488603 * z,
+        0.488603 * x,
+        1.092548 * x * y,
+        1.092548 * y * z,
+        0.315392 * (3 * z * z - 1),
+        1.092548 * x * z,
+        0.546274 * (x * x - y * y)
+      ];
+    }
+
+    const loader = new PLYLoader();
+    loader.load('point_cloud_ascii.ply', function (geometry) {
+      geometry.computeVertexNormals();
+      geometry.computeBoundingBox();
+
+      const posAttr = geometry.getAttribute('position');
+      const count = posAttr.count;
+      console.log('✅ Vertex count:', count);
+      console.log('✅ Available attributes:', Object.keys(geometry.attributes));
+      console.log('✅ Bounding box:', geometry.boundingBox);
+      console.log('✅ Sample position:', posAttr.array.slice(0, 9));
+
+      const dc0 = geometry.getAttribute('f_dc_0');
+      const dc1 = geometry.getAttribute('f_dc_1');
+      const dc2 = geometry.getAttribute('f_dc_2');
+
+      if (!dc0 || !dc1 || !dc2) {
+        console.error('❌ Missing DC attributes');
+        return;
+      }
+
+      console.log('✅ Sample f_dc_0:', dc0.array.slice(0, 3));
+      console.log('✅ Sample f_rest_0:', geometry.getAttribute('f_rest_0')?.array.slice(0, 3));
+
+      const numRestCoeffs = 15;
+      const shCoeffs = Array(count).fill().map(() => [[], [], []]);
+
+      for (let i = 0; i < count; i++) {
+        shCoeffs[i][0][0] = dc0.array[i];
+        shCoeffs[i][1][0] = dc1.array[i];
+        shCoeffs[i][2][0] = dc2.array[i];
+      }
+
+      for (let coeffIdx = 1; coeffIdx <= numRestCoeffs; coeffIdx++) {
+        for (let ch = 0; ch < 3; ch++) {
+          const attrName = `f_rest_${3 * (coeffIdx - 1) + ch}`;
+          const attr = geometry.getAttribute(attrName);
+          if (!attr) {
+            console.warn(`⚠️ Missing attribute ${attrName}`);
+            for (let i = 0; i < count; i++) shCoeffs[i][ch][coeffIdx] = 0;
+            continue;
+          }
+          for (let i = 0; i < count; i++) {
+            shCoeffs[i][ch][coeffIdx] = attr.array[i];
+          }
+        }
+      }
+
+      const colors = new Float32Array(count * 3);
+      const camPos = camera.position;
+
+      for (let i = 0; i < count; i++) {
+        let dx = posAttr.getX(i) - camPos.x;
+        let dy = posAttr.getY(i) - camPos.y;
+        let dz = posAttr.getZ(i) - camPos.z;
+        const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        dx /= len;
+        dy /= len;
+        dz /= len;
+
+        const shBasis = evalSHBasis({ x: dx, y: dy, z: dz });
+
+        let r = 0, g = 0, b = 0;
+        for (let coeffIdx = 0; coeffIdx < shBasis.length; coeffIdx++) {
+          r += shCoeffs[i][0][coeffIdx] * shBasis[coeffIdx];
+          g += shCoeffs[i][1][coeffIdx] * shBasis[coeffIdx];
+          b += shCoeffs[i][2][coeffIdx] * shBasis[coeffIdx];
+        }
+
+        r = Math.min(Math.max(r + 0.5, 0), 1);
+        g = Math.min(Math.max(g + 0.5, 0), 1);
+        b = Math.min(Math.max(b + 0.5, 0), 1);
+
+        colors[i * 3 + 0] = r;
+        colors[i * 3 + 1] = g;
+        colors[i * 3 + 2] = b;
+      }
+
+      console.log('✅ Sample color (RGB)', colors.slice(0, 9));
+
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      const material = new THREE.PointsMaterial({
+        size: 0.05, // Larger size for visibility
+        vertexColors: true
+      });
+
+      const pointCloud = new THREE.Points(geometry, material);
+      scene.add(pointCloud);
+
+      // Center camera
+      const center = geometry.boundingBox.getCenter(new THREE.Vector3());
+      camera.position.copy(center.clone().add(new THREE.Vector3(0, 0, 2)));
+      camera.lookAt(center);
+      controls.object = camera;
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update(clock.getDelta());
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 # 3D Gaussian Splatting Pipeline
 
+## IMPORTANT: PLYLoader doesn't load the custom variables; needed to build my own PLYLoader for it to work
+
 ## Repositories
 
 - [INRIA Official: gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
